@@ -1,0 +1,1581 @@
+<html>
+  <head>
+	<style>
+      html, body {
+        background-color: #202020;
+				height: 100%;
+      }
+			
+			body {
+				margin: 0;
+				padding: 0;
+			}
+			
+			canvas { 
+				overflow: hidden;
+			}
+			
+			.difficulty {
+				position: absolute;
+				top: 50%;
+				left: 50%;
+				transform: translate(-50%, -50%);
+			}
+			
+			.upgrades {
+				position: absolute;
+				color: #ffffff;
+			}
+    </style>
+  </head>
+  <body>
+		<div class="container difficulty">
+			<select id="my-select">
+				<option value="0.6">Very Easy</option>
+				<option value="0.8">Easy</option>
+				<option value="1">Medium</option>
+				<option value="1.2">Hard</option>
+				<option value="1.4">Very Hard</option>
+				<option value="2.5+">Impossible</option>
+			</select>
+		</div>
+		<div class="container upgrades" id="upgrade-menu">
+			<h2 id="upgrade-count">Upgrades (0)</h2>
+			<p>Damage: <span id="damage-level">1</span></p>
+			<button onclick="upgradeDamage()">Upgrade Damage</button>
+			<p>Fire Rate: <span id="fire-rate-level">100</span></p>
+			<button onclick="upgradeFireRate()">Upgrade Fire Rate</button>
+			<p>Number of Projectiles: <span id="projectile-level">1</span></p>
+			<button onclick="upgradeProjectiles()">Upgrade Projectiles</button>
+			<p>Number of Allies: <span id="ally-level">0</span></p>
+			<button onclick="upgradeAllies()">Upgrade Allies</button>
+			<p>Bullet Pierce: <span id="pierce-level">1</span></p>
+			<button onclick="upgradePierce()">Upgrade Pierce</button>
+			<p>Health: <span id="health-level">3/3</span></p>
+			<button onclick="upgradeHealth()">Upgrade Health</button>
+			<p>Health Regen: <span id="regen-level">0%</span></p>
+			<button onclick="upgradeRegen()">Upgrade Regen</button>
+			<br>
+			<br>
+			<button onclick="startWave()">Skip Wave</button>
+		</div>
+    <canvas id="canvas"></canvas>
+<script>
+		
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+document.getElementById('canvas').width = window.innerWidth;
+document.getElementById('canvas').height = window.innerHeight;
+
+window.onresize = function(event) {
+  document.getElementById('canvas').width = window.innerWidth;
+  document.getElementById('canvas').height = window.innerHeight;
+};
+
+const keysPressed = {}; // key state object
+window.enemies = [];
+var allies = [];
+var mouseX = 0;
+var mouseY = 0;
+var aim = 0;
+var autoshoot = 0;
+var dead = 0;
+var difficulty;
+var projectiles = 1;
+var wave = 0;
+var upgradePoints = 0;
+var fps = 60;
+var mousedown = 0;
+var enemyid = 0;
+window.score = 0;
+
+function drawBullet(x, y) {
+  ctx.drawImage(bulletSprite, x, y)
+}
+
+var playerStats = {
+	radius: 20, // Player radius (px)
+	firerate: 100, // Player fire rate (ms)
+	baseSpeed: 2.5, // Player normal movement speed (px/F)
+	sprintSpeed: 5.5, // Player fast movement speed (px/F) (hold shift)
+	maxhealth: 3, // Player max health
+	health: 3, // Player current health
+	regen: 0, // Player regen speed (%/F)
+	damage: 1, // Player bullet damage
+	bulletRadius: 5, // Player bullet radius
+	bulletPierce: 1, // Player bullet pierce
+	bulletSpeed: 7, // Player bullet speed (px/F)
+	bulletMultihit: 0, // Player's bullet hits same enemy multiple times if enough pierce
+}
+const player = {
+  radius: playerStats.radius,
+  x: canvas.width / 2 - playerStats.radius / 2,
+  y: canvas.height / 2 - playerStats.radius / 2,
+	firerate: playerStats.firerate,
+	lastFired: 0,
+  baseSpeed: playerStats.baseSpeed,
+  sprintSpeed: playerStats.sprintSpeed,
+  maxhealth: playerStats.maxhealth,
+  health: playerStats.health,
+	damage: playerStats.damage,
+	bulletRadius: playerStats.bulletRadius,
+	bulletPierce: playerStats.bulletPierce,
+	bulletMultihit: playerStats.bulletMultihit,
+	regen: playerStats.regen,
+	poisoned: {strength: 0, duration: 0},
+	bulletSpeed: playerStats.bulletSpeed,
+	getNearestEnemy: function() {
+		let nearestEnemyDistSquared = Infinity;
+		for (let i = 0; i < window.enemies.length; i++) {
+			const enemy = window.enemies[i];
+			const dx = enemy.x - this.x;
+			const dy = enemy.y - this.y;
+			const distSquared = dx * dx + dy * dy;
+
+			if (distSquared < nearestEnemyDistSquared) {
+				this.nearestEnemy = enemy;
+				nearestEnemyDistSquared = distSquared;
+			}
+		}
+	},
+	shoot: function() {
+		this.getNearestEnemy()
+		this.lastFired -= 1000 / fps;
+		if(this.lastFired <= 0 && !(aim && !this.nearestEnemy)) {
+			var angle = (aim && this.nearestEnemy) ? Math.atan2((this.nearestEnemy.y + this.nearestEnemy.radius / 2) - (this.y + this.radius / 2), (this.nearestEnemy.x + this.nearestEnemy.radius / 2) - (this.x + this.radius / 2)) : Math.atan2(mouseY - (player.y + player.radius / 2), mouseX - (player.x + player.radius / 2));
+			// Calculate the velocity of the bullets
+			var bulletSpeed = this.bulletSpeed;
+			var bulletDamage = this.damage;
+			var velocities = [];
+			for(let i = 0; i < projectiles; i++) {
+				var spreadAngle = (i - (projectiles - 1) / 2) * 0.1; // modify the spread angle as desired
+				var velocityX = bulletSpeed * Math.cos(angle + spreadAngle);
+				var velocityY = bulletSpeed * Math.sin(angle + spreadAngle);
+				velocities.push({x: velocityX, y: velocityY});
+			}
+
+			var bulletX = this.x + this.radius / 2 - this.bulletRadius / 2;
+			var bulletY = this.y + this.radius / 2 - this.bulletRadius / 2;
+
+			// Create a new bullet object for each bullet and add it to the active bullets array
+			for(let i = 0; i < projectiles; i++) {
+				var bullet = {x: bulletX, y: bulletY, dx: velocities[i].x, dy: velocities[i].y, radius: this.bulletRadius, damage: bulletDamage, pierce: this.bulletPierce, hitEnemies: [], multihit: this.bulletMultihit};
+				bullets.push(bullet);
+			}
+
+			this.lastFired += this.firerate;
+		}
+	}
+};
+
+var allyStats = {
+	radius: playerStats.radius, // Ally radius (px)
+	firerate: function(e) {
+		return e * 2; // Ally fire rate (ms) (player.firerate * 2)
+	},
+	damage: function(e) {
+		return e; // Ally bullet damage (player.damage)
+	},
+	bulletRadius: function(e) {
+		return e; // Ally bullet radius (player.bulletRadius)
+	},
+	bulletPierce: function(e) {
+		return e; // Ally bullet pierce (player.bulletPierce)
+	},
+	bulletSpeed: function(e) {
+		return e; // Ally bullet speed (player.bulletSpeed)
+	},
+	speed: 4, // Ally normal movement speed (px/F),
+	stopDistance: 100, // Ally stops this close to player (px)
+	bulletMultihit: 0, // Ally's bullet hits same enemy multiple times if enough pierce
+}
+function spawnAlly() {
+	const ally = {
+		radius: allyStats.radius,
+		x: player.x,
+		y: player.y,
+		firerate: allyStats.firerate(player.firerate),
+		lastFired: 0,
+		speed: allyStats.speed,
+		damage: allyStats.damage(player.damage),
+		bulletRadius: allyStats.bulletRadius(player.bulletRadius),
+		bulletPierce: allyStats.bulletPierce(player.bulletPierce),
+		bulletSpeed: allyStats.bulletSpeed(player.bulletSpeed),
+		bulletMultihit: allyStats.bulletMultihit,
+		update: function() {
+			const dx = player.x - this.x;
+			const dy = player.y - this.y;
+			const dist = Math.sqrt(dx * dx + dy * dy);
+			this.dx = (dx / dist) || 0;
+			this.dy = (dy / dist) || 0;
+			if(dist >= allyStats.stopDistance) {
+				this.x += this.dx * this.speed;
+				this.y += this.dy * this.speed;
+			}
+			this.firerate = allyStats.firerate(player.firerate);
+			this.damage = allyStats.damage(player.damage);
+			this.bulletRadius = allyStats.bulletRadius(player.bulletRadius);
+			this.bulletPierce = allyStats.bulletPierce(player.bulletPierce);
+			this.bulletSpeed = allyStats.bulletSpeed(player.bulletSpeed);
+		},
+		getNearestEnemy: function() {
+			let nearestEnemyDistSquared = Infinity;
+			for (let i = 0; i < window.enemies.length; i++) {
+				const enemy = window.enemies[i];
+				const dx = enemy.x - this.x;
+				const dy = enemy.y - this.y;
+				const distSquared = dx * dx + dy * dy;
+
+				if (distSquared < nearestEnemyDistSquared) {
+					this.nearestEnemy = enemy;
+					nearestEnemyDistSquared = distSquared;
+				}
+			}
+		},
+		shoot: function() {
+			this.getNearestEnemy()
+			this.lastFired -= 1000 / fps;
+			if(this.lastFired <= 0 && this.nearestEnemy) {
+				var angle = Math.atan2((this.nearestEnemy.y + this.nearestEnemy.radius / 2) - (this.y + this.radius / 2), (this.nearestEnemy.x + this.nearestEnemy.radius / 2) - (this.x + this.radius / 2))
+				// Calculate the velocity of the bullets
+				var bulletSpeed = this.bulletSpeed;
+				var bulletDamage = this.damage;
+				var velocities = [];
+				for(let i = 0; i < projectiles; i++) {
+					var spreadAngle = (i - (projectiles - 1) / 2) * 0.1; // modify the spread angle as desired
+					var velocityX = bulletSpeed * Math.cos(angle + spreadAngle);
+					var velocityY = bulletSpeed * Math.sin(angle + spreadAngle);
+					velocities.push({x: velocityX, y: velocityY});
+				}
+
+				var bulletX = this.x + this.radius / 2 - this.bulletRadius / 2;
+				var bulletY = this.y + this.radius / 2 - this.bulletRadius / 2;
+
+				// Create a new bullet object for each bullet and add it to the active bullets array
+				for(let i = 0; i < projectiles; i++) {
+					var bullet = {x: bulletX, y: bulletY, dx: velocities[i].x, dy: velocities[i].y, radius: this.bulletRadius, damage: bulletDamage, pierce: this.bulletPierce, hitEnemies: [], multihit: this.bulletMultihit};
+					bullets.push(bullet);
+				}
+
+				this.lastFired += this.firerate;
+			}
+		}
+	};
+	allies.push(ally);
+}
+
+const PI2 = Math.PI * 2;
+
+var bulletcvs = document.createElement('canvas');
+bulletcvs.width = player.bulletRadius;
+bulletcvs.height = player.bulletRadius;
+var bulletctx = bulletcvs.getContext('2d');
+bulletctx.beginPath();
+bulletctx.arc(player.bulletRadius / 2, player.bulletRadius / 2, player.bulletRadius / 2, 0, PI2);
+bulletctx.fillStyle = '#888'; // Replace with the color you want
+bulletctx.fill();
+var dataURL = bulletcvs.toDataURL();
+var bulletSprite = new Image();
+bulletSprite.src = dataURL;
+
+canvas.addEventListener('mousemove', function(event) {
+  mouseX = event.clientX;
+  mouseY = event.clientY;
+});
+
+document.addEventListener('contextmenu', event => event.preventDefault());
+
+canvas.addEventListener('mousedown', function(event) {
+  mousedown = 1;
+});
+
+canvas.addEventListener('mouseup', function(event) {
+  mousedown = 0;
+});
+
+// Set key state to true when a key is first pressed down
+document.addEventListener('keydown', function(event) {
+  keysPressed[event.code] = true;
+  if (event.which == 82) {
+    aim = !aim;
+  }
+  if (event.which == 69) {
+    autoshoot = !autoshoot;
+  }
+	if (event.which == 70) {
+		startWave();
+	}
+});
+
+// Set key state to false when a key is released
+document.addEventListener('keyup', function(event) {
+  keysPressed[event.code] = false;
+});
+
+let bullets = []; // active bullets array
+
+function degreesToRadians(degrees) {
+  return degrees * (Math.PI / 180);
+}
+
+// Continuously update the player position based on the key state
+function update() {
+	const impossible = difficulty && difficulty.indexOf("+") != -1;
+  const speed = keysPressed['ShiftLeft'] ? player.sprintSpeed : player.baseSpeed;
+
+	// Count number of slowing enemies within radius
+	let slowFactor = 1;
+	for (const enemy of enemies) {
+		if(enemy.type === 'slowing' || enemy.type === 'stopping') {
+			const slowingRadius = enemy.slowradius; // Example radius, adjust as needed
+			const dx = (player.x + player.radius / 2) - (enemy.x + enemy.radius / 2);
+			const dy = (player.y + player.radius / 2) - (enemy.y + enemy.radius / 2)
+			const dist = Math.sqrt(dx * dx + dy * dy);
+			if (dist < slowingRadius) {
+				slowFactor *= enemy.slow;
+			}
+			ctx.strokeStyle = enemy.color;
+			ctx.beginPath();
+			ctx.arc(enemy.x + enemy.radius / 2, enemy.y + enemy.radius / 2, slowingRadius, 0, 2 * Math.PI);
+			ctx.stroke();
+		}
+	}
+
+	// Modify player's speed based on number of slowing enemies
+	const effectiveSpeed = speed * slowFactor;
+
+  // move player and keep within canvas bounds
+  if (keysPressed['KeyW']) {
+    player.y = Math.max(0, player.y - effectiveSpeed);
+  }
+  if (keysPressed['KeyA']) {
+    player.x = Math.max(0, player.x - effectiveSpeed);
+  }
+  if (keysPressed['KeyS']) {
+    player.y = Math.min(canvas.height - player.radius, player.y + effectiveSpeed);
+  }
+  if (keysPressed['KeyD']) {
+    player.x = Math.min(canvas.width - player.radius, player.x + effectiveSpeed);
+  }
+
+  if (keysPressed['Space'] || autoshoot || mousedown) {
+    player.shoot();
+	}
+	
+	if(player.poisoned.strength) {
+		document.getElementById("regen-level").innerHTML = `${(Math.round(player.regen * 1e3) / 1e3)}% - ${(Math.round(player.poisoned.strength * 1e3) / 1e3)}%`;
+	} else {
+		document.getElementById("regen-level").innerHTML = `${(Math.round(player.regen * 1e3) / 1e3)}%`;
+	}
+	
+	player.health = Math.min(player.maxhealth, player.health + (player.maxhealth * ((player.regen / 100) - (player.poisoned.strength / 100))))
+	if (player.health <= 0 && !dead) {
+		dead = 1;
+		alert(`You died on wave ${wave}. Your score is: ${Math.round(window.score * 10) / 10}`);
+		location.reload();
+	}
+	document.getElementById("health-level").innerHTML = `${Math.round(player.health * 10) / 10}/${player.maxhealth}`;
+	
+	if(player.poisoned.duration < Date.now()) {
+		player.poisoned = {strength: 0, duration: 0};
+	}
+
+  // Update bullet positions and check for collisions with enemies
+	for (let i = bullets.length - 1; i >= 0; i--) {
+    let bullet = bullets[i];
+    bullet.x += bullet.dx;
+    bullet.y += bullet.dy;
+    // Remove bullet if it goes off screen
+    if (bullet.x < 0 || bullet.x > canvas.width || bullet.y < 0 || bullet.y > canvas.height) {
+		  bullets.splice(i, 1);
+			continue;
+    }
+
+    // Check for collision between bullet and each target
+    for (let j = 0; j < window.enemies.length; j++) {
+      const enemy = window.enemies[j];
+      // Collision handling
+
+			if(bullet.enemy) {
+				if (collision(bullet, player)) {
+					player.health -= bullet.damage;
+					if(bullet.poison) {
+						player.poisoned.strength += bullet.poison.strength;
+						player.poisoned.duration = Math.max(player.poisoned.duration, Date.now() + bullet.poison.duration);
+					}
+					document.getElementById("health-level").innerHTML = `${Math.round(player.health * 10) / 10}/${player.maxhealth}`;
+					if (player.health <= 0 && !dead) {
+						dead = 1;
+						alert(`You died on wave ${wave}. Your score is: ${Math.round(window.score * 10) / 10}`);
+						location.reload();
+					}
+					bullets.splice(i, 1);
+					break;
+				}
+			} else {
+				if (collision(bullet, enemy) && bullet.hitEnemies.indexOf(enemy.id) === -1) {
+					if(enemy.type == 'armored') {
+						enemy.health -= 1;
+					} else {
+						enemy.health -= bullet.damage;
+					}
+					if (enemy.health <= 0) {
+						window.score += Math.round(enemy.score * parseFloat(difficulty) * 10) / 10;
+						if(enemy.type != 'split') {
+							window.enemies.splice(j, 1);
+						}
+					}
+					bullet.pierce--;
+					if(!bullet.multihit) {
+						bullet.hitEnemies.push(enemy.id);
+					}
+					if(bullet.pierce == 0) {
+						bullets.splice(i, 1);
+						break;
+					}
+				}
+			}
+		}
+	}
+}
+
+function enemySpawnpoint() {
+    const direction = Math.floor(Math.random() * 4);
+    let x, y;
+    if (direction === 0) {
+      // Spawn on top
+      x = Math.random() * canvas.width;
+      y = 0;
+    } else if (direction === 1) {
+      // Spawn on bottom
+      x = Math.random() * canvas.width;
+      y = canvas.height;
+    } else if (direction === 2) {
+      // Spawn on left
+      x = 0;
+      y = Math.random() * canvas.height;
+    } else if (direction === 3) {
+      // Spawn on right
+      x = canvas.width;
+      y = Math.random() * canvas.height;
+    }
+		return {x: x, y: y}
+}
+
+var normalEnemyStats = {
+	type: 'normal',
+	color: '#ff1111',
+	size: 20, // Normal enemy radius (px)
+	score: 1, // Score for killing a normal enemy
+	health: 1, // Normal enemy health
+	damage: 1, // Normal enemy damage
+	speed: 1, // Normal enemy movement speed (px/F)
+}
+function spawnNormalEnemy(scaling) {
+  // Code for spawning a normal enemy goes here
+	const spawn = enemySpawnpoint();
+  const enemyType = normalEnemyStats.type;
+	const enemyColor = normalEnemyStats.color;
+  const enemy = {
+    x: spawn.x,
+    y: spawn.y,
+    type: enemyType,
+		color: enemyColor,
+    radius: normalEnemyStats.size,
+    score: normalEnemyStats.score,
+    health: normalEnemyStats.health * scaling,
+    damage: normalEnemyStats.damage * scaling,
+    speed: Math.min(normalEnemyStats.speed * scaling, 10),
+		id: enemyid,
+		update: function() {
+			// Calculate direction towards player
+			const dx = player.x - this.x;
+			const dy = player.y - this.y;
+			const dist = Math.sqrt(dx * dx + dy * dy);
+			this.dx = (dx / dist) || 0;
+			this.dy = (dy / dist) || 0;
+			this.x += this.dx * this.speed;
+			this.y += this.dy * this.speed;
+			const dx2 = player.x - this.x;
+			const dy2 = player.y - this.y;
+			if(Math.sign(dx) != Math.sign(dx2) && Math.sign(dy) != Math.sign(dy2)) {
+				this.x = player.x;
+				this.y = player.y;
+			}
+    }
+  };
+  window.enemies.push(enemy);
+	enemyid = (enemyid + 1) % 1e12;
+}
+
+var bigEnemyStats = {
+	type: 'big',
+	color: '#bb1111',
+	size: 50, // Big enemy radius (px)
+	score: 5, // Score for killing a big enemy
+	health: 10, // Big enemy health
+	damage: 3, // Big enemy damage
+	speed: 1, // Big enemy movement speed (px/F)
+}
+function spawnBigEnemy(scaling) {
+  // Code for spawning a big enemy goes here
+	const spawn = enemySpawnpoint();
+  const enemyType = bigEnemyStats.type;
+	const enemyColor = bigEnemyStats.color;
+  const enemy = {
+    x: spawn.x,
+    y: spawn.y,
+    type: enemyType,
+		color: enemyColor,
+    radius: bigEnemyStats.size,
+    score: bigEnemyStats.score,
+    health: bigEnemyStats.health * scaling,
+    damage: bigEnemyStats.damage * scaling,
+    speed: Math.min(bigEnemyStats.speed * scaling, 10),
+		id: enemyid,
+		update: function() {
+			// Calculate direction towards player
+			const dx = player.x - this.x;
+			const dy = player.y - this.y;
+			const dist = Math.sqrt(dx * dx + dy * dy);
+			this.dx = (dx / dist) || 0;
+			this.dy = (dy / dist) || 0;
+			this.x += this.dx * this.speed;
+			this.y += this.dy * this.speed;
+			const dx2 = player.x - this.x;
+			const dy2 = player.y - this.y;
+			if(Math.sign(dx) != Math.sign(dx2) && Math.sign(dy) != Math.sign(dy2)) {
+				this.x = player.x;
+				this.y = player.y;
+			}
+		}
+  };
+  window.enemies.push(enemy);
+	enemyid = (enemyid + 1) % 1e12;
+}
+
+var fastEnemyStats = {
+	type: 'fast',
+	color: '#bbbb11',
+	size: 15, // Fast enemy radius (px)
+	score: 20, // Score for killing a fast enemy
+	health: 3, // Fast enemy health
+	damage: 2, // Fast enemy damage
+	speed: 3, // Fast enemy movement speed (px/F)
+}
+function spawnFastEnemy(scaling) {
+  // Code for spawning a fast enemy goes here
+	const spawn = enemySpawnpoint();
+  const enemyType = fastEnemyStats.type;
+	const enemyColor = fastEnemyStats.color;
+  const enemy = {
+    x: spawn.x,
+    y: spawn.y,
+    type: enemyType,
+		color: enemyColor,
+    radius: fastEnemyStats.size,
+    score: fastEnemyStats.score,
+    health: fastEnemyStats.health * scaling,
+    damage: fastEnemyStats.damage * scaling,
+    speed: Math.min(fastEnemyStats.speed * scaling, 10),
+		id: enemyid,
+		update: function() {
+			// Calculate direction towards player
+			const dx = player.x - this.x;
+			const dy = player.y - this.y;
+			const dist = Math.sqrt(dx * dx + dy * dy);
+			this.dx = (dx / dist) || 0;
+			this.dy = (dy / dist) || 0;
+      this.x += this.dx * this.speed;
+      this.y += this.dy * this.speed;
+			const dx2 = player.x - this.x;
+			const dy2 = player.y - this.y;
+			if(Math.sign(dx) != Math.sign(dx2) && Math.sign(dy) != Math.sign(dy2)) {
+				this.x = player.x;
+				this.y = player.y;
+			}	
+    }
+  };
+  window.enemies.push(enemy);
+	enemyid = (enemyid + 1) % 1e12;
+}
+
+var splitEnemyStats = {
+	type: 'split',
+	color: '#11ffff',
+	size: function(e) {
+		return 10 + (e * 5); // Splitter enemy size (base + (splitCount * multiplier)) (px)
+	},
+	score: function(e) {
+		return 2 + (e * 0); // Score for killing a splitter enemy (base + (splitCount * multiplier)), multiplier is currently unused
+	},
+	health: function(e) {
+		return 5 + (e * 5); // Splitter enemy health (base + (splitCount * multiplier))
+	},
+	damage: function(e, t) {
+		return 3 * Math.pow(t, e); // Splitter enemy damage (base * Math.pow(splitMulti, splitCount))
+	},
+	speed: function(e) {
+		return Math.max(4 - (e / 3), 2); // Splitter enemy movement speed (px/F) (Math.max(base - (splitCount / divisor), minimum))
+	},
+	splitRadius: 50, // Splitting radius of a splitter enemy (px)
+}
+
+function spawnSplitEnemy(scaling, splitCount = 3, splitMulti = 2, cx = undefined, cy = undefined) {
+  // Code for spawning a splitter enemy goes here
+	const spawn = enemySpawnpoint();
+  const enemyType = splitEnemyStats.type;
+	const enemyColor = splitEnemyStats.color;
+  const enemy = {
+    x: (cx != undefined) ? (cx + Math.floor(Math.random() * splitEnemyStats.splitRadius) - splitEnemyStats.splitRadius / 2) : spawn.x,
+    y: (cy != undefined) ? (cy + Math.floor(Math.random() * splitEnemyStats.splitRadius) - splitEnemyStats.splitRadius / 2) : spawn.y,
+    type: enemyType,
+		color: enemyColor,
+    radius: splitEnemyStats.size(splitCount),
+    score: splitEnemyStats.score(splitCount),
+    health: splitEnemyStats.health(splitCount) * scaling,
+    damage: splitEnemyStats.damage(splitCount, splitMulti) * scaling,
+    speed: Math.min(splitEnemyStats.speed(splitCount) * scaling, 10),
+		id: enemyid,
+		update: function() {
+			if(this.health <= 0) {
+				if(splitCount > 0) {
+					for(let i=0;i<splitMulti;i++) {
+					spawnSplitEnemy(scaling, splitCount - 1, splitMulti, this.x, this.y);
+					}
+				}
+				const index = window.enemies.indexOf(this);
+        if (index > -1) {
+          window.enemies.splice(index, 1);
+        }
+			} else {
+				// Calculate direction towards player
+				const dx = player.x - this.x;
+				const dy = player.y - this.y;
+				const dist = Math.sqrt(dx * dx + dy * dy);
+				this.dx = (dx / dist) || 0;
+				this.dy = (dy / dist) || 0;
+				this.x += this.dx * this.speed;
+				this.y += this.dy * this.speed;
+				const dx2 = player.x - this.x;
+				const dy2 = player.y - this.y;
+				if(Math.sign(dx) != Math.sign(dx2) && Math.sign(dy) != Math.sign(dy2)) {
+					this.x = player.x;
+					this.y = player.y;
+				}
+			}
+    }
+  };
+  window.enemies.push(enemy);
+	enemyid = (enemyid + 1) % 1e12;
+}
+
+var armoredEnemyStats = {
+	type: 'armored',
+	color: '#881188',
+	size: 80, // Armored enemy radius (px)
+	score: 2e3, // Score for killing a armored enemy
+	health: 600, // Armored enemy health
+	damage: 499, // Armored enemy damage
+	speed: 1.5, // Armored enemy movement speed (px/F)
+}
+function spawnArmoredEnemy(scaling) {
+  // Code for spawning a armored enemy goes here
+	const spawn = enemySpawnpoint();
+  const enemyType = armoredEnemyStats.type;
+	const enemyColor = armoredEnemyStats.color;
+  const enemy = {
+    x: spawn.x,
+    y: spawn.y,
+    type: enemyType,
+		color: enemyColor,
+    radius: armoredEnemyStats.size,
+    score: armoredEnemyStats.score,
+    health: armoredEnemyStats.health * scaling,
+    damage: armoredEnemyStats.damage * scaling,
+    speed: Math.min(armoredEnemyStats.speed * scaling, 10),
+		id: enemyid,
+		update: function() {
+			// Calculate direction towards player
+			const dx = player.x - this.x;
+			const dy = player.y - this.y;
+			const dist = Math.sqrt(dx * dx + dy * dy);
+			this.dx = (dx / dist) || 0;
+			this.dy = (dy / dist) || 0;
+			this.x += this.dx * this.speed;
+			this.y += this.dy * this.speed;
+			const dx2 = player.x - this.x;
+			const dy2 = player.y - this.y;
+			if(Math.sign(dx) != Math.sign(dx2) && Math.sign(dy) != Math.sign(dy2)) {
+				this.x = player.x;
+				this.y = player.y;
+			}
+		}
+  };
+  window.enemies.push(enemy);
+	enemyid = (enemyid + 1) % 1e12;
+}
+
+var shootEnemyStats = {
+	type: 'shoot',
+	color: '#888',
+	size: 20, // Shooting enemy size
+	score: 1e3, // Score for killing a shooting enemy
+	health: 50, // Shooting enemy health
+	damage: 10, // Shooting enemy damage (melee)
+	speed: 2, // Shooting enemy movement speed (px/F)
+	bulletDamage: 1, // Shooting enemy damage (ranged)
+	bulletCount: 3, // How many bullets a shooting enemy shoots
+	bulletRadius: 5, // Shooting enemy bullet radius
+	bulletSpeed: 7, // Shooting enemy bullet speed (px/F)
+	firerate: 150, // Shooting enemy fire rate (ms)
+	range: 500, // Shooting enemy bullet range (px)
+}
+function spawnShootEnemy(scaling) {
+  // Code for spawning a shooting enemy goes here
+	const spawn = enemySpawnpoint();
+  const enemyType = shootEnemyStats.type;
+	const enemyColor = shootEnemyStats.color;
+  const enemy = {
+    x: spawn.x,
+    y: spawn.y,
+    type: enemyType,
+		color: enemyColor,
+    radius: shootEnemyStats.size,
+    score: shootEnemyStats.score,
+    health: shootEnemyStats.health * scaling,
+    damage: shootEnemyStats.damage * scaling,
+    speed: Math.min(shootEnemyStats.speed * scaling, 10),
+		lastFired: 0,
+		bulletRadius: shootEnemyStats.bulletRadius,
+		firerate: shootEnemyStats.firerate,
+		shootingRange: shootEnemyStats.range,
+		id: enemyid,
+		update: function() {
+			// Calculate direction towards player
+			const dx = player.x - this.x;
+			const dy = player.y - this.y;
+			const dist = Math.sqrt(dx * dx + dy * dy);
+			this.dx = (dx / dist) || 0;
+			this.dy = (dy / dist) || 0;
+			
+			// If player is within range, fire a bullet at them
+			this.lastFired -= 1000 / fps;
+			if (dist <= this.shootingRange && this.lastFired <= 0) {
+        let angle = Math.atan2((player.y + player.radius / 2) - (this.y + this.radius / 2), (player.x + player.radius / 2) - (this.x + this.radius / 2));
+				// Calculate the velocity of the bullets
+				var bulletSpeed = shootEnemyStats.bulletSpeed;
+				var bulletDamage = shootEnemyStats.bulletDamage;
+				var enemyProjectiles = shootEnemyStats.bulletCount;
+				var velocities = [];
+				for(let i = 0; i < enemyProjectiles; i++) {
+					var spreadAngle = (i - (enemyProjectiles - 1) / 2) * 0.1; // modify the spread angle as desired
+					var velocityX = bulletSpeed * Math.cos(angle + spreadAngle);
+					var velocityY = bulletSpeed * Math.sin(angle + spreadAngle);
+					velocities.push({x: velocityX, y: velocityY});
+				}
+
+				var bulletX = this.x + this.radius / 2 - this.bulletRadius / 2;
+				var bulletY = this.y + this.radius / 2 - this.bulletRadius / 2;
+
+				// Create a new bullet object for each bullet and add it to the active bullets array
+				for(let i = 0; i < enemyProjectiles; i++) {
+					var bullet = {x: bulletX, y: bulletY, dx: velocities[i].x, dy: velocities[i].y, radius: this.bulletRadius, damage: bulletDamage, enemy: 1};
+					bullets.push(bullet);
+				}
+				this.lastFired += this.firerate;
+			}
+			
+			this.x += this.dx * this.speed;
+			this.y += this.dy * this.speed;
+			
+			const dx2 = player.x - this.x;
+			const dy2 = player.y - this.y;
+			if(Math.sign(dx) != Math.sign(dx2) && Math.sign(dy) != Math.sign(dy2)) {
+				this.x = player.x;
+				this.y = player.y;
+			}
+    }
+  };
+  window.enemies.push(enemy);
+	enemyid = (enemyid + 1) % 1e12;
+}
+
+var slowingEnemyStats = {
+	type: 'slowing',
+	color: '#550000',
+	size: 25, // Slowing enemy radius (px)
+	score: 50, // Score for killing a slowing enemy
+	health: 10, // Slowing enemy health
+	damage: 5, // Slowing enemy damage
+	speed: 1.2, // Slowing enemy movement speed (px/F)
+	radius: 200, // Slow aura radius (px)
+	slow: 0.7, // Slow aura strength (multiplies player speed)
+}
+function spawnSlowingEnemy(scaling) {
+  // Code for spawning a slowing enemy goes here
+	const spawn = enemySpawnpoint();
+  const enemyType = slowingEnemyStats.type;
+	const enemyColor = slowingEnemyStats.color;
+  const enemy = {
+    x: spawn.x,
+    y: spawn.y,
+    type: enemyType,
+		color: enemyColor,
+    radius: slowingEnemyStats.size,
+    score: slowingEnemyStats.score,
+    health: slowingEnemyStats.health * scaling,
+    damage: slowingEnemyStats.damage * scaling,
+    speed: Math.min(slowingEnemyStats.speed * scaling, 10),
+		slowradius: slowingEnemyStats.radius,
+		slow: slowingEnemyStats.slow,
+		id: enemyid,
+		update: function() {
+			// Calculate direction towards player
+			const dx = player.x - this.x;
+			const dy = player.y - this.y;
+			const dist = Math.sqrt(dx * dx + dy * dy);
+			this.dx = (dx / dist) || 0;
+			this.dy = (dy / dist) || 0;
+      this.x += this.dx * this.speed;
+      this.y += this.dy * this.speed;
+			const dx2 = player.x - this.x;
+			const dy2 = player.y - this.y;
+			if(Math.sign(dx) != Math.sign(dx2) && Math.sign(dy) != Math.sign(dy2)) {
+				this.x = player.x;
+				this.y = player.y;
+			}	
+    }
+  };
+  window.enemies.push(enemy);
+	enemyid = (enemyid + 1) % 1e12;
+}
+
+var stoppingEnemyStats = {
+	type: 'stopping',
+	color: '#000',
+	size: 40, // Slowing enemy radius (px)
+	score: 50, // Score for killing a slowing enemy
+	health: 100, // Slowing enemy health
+	damage: 5000, // Slowing enemy damage
+	speed: 1.7, // Slowing enemy movement speed (px/F)
+	radius: 150, // Slow aura radius (px)
+	slow: 0, // Slow aura strength (multiplies player speed)
+}
+function spawnStoppingEnemy(scaling) {
+  // Code for spawning a stopping enemy goes here
+	const spawn = enemySpawnpoint();
+  const enemyType = stoppingEnemyStats.type;
+	const enemyColor = stoppingEnemyStats.color;
+  const enemy = {
+    x: spawn.x,
+    y: spawn.y,
+    type: enemyType,
+		color: enemyColor,
+    radius: stoppingEnemyStats.size,
+    score: stoppingEnemyStats.score,
+    health: stoppingEnemyStats.health * scaling,
+    damage: stoppingEnemyStats.damage * scaling,
+    speed: Math.min(stoppingEnemyStats.speed * scaling, 10),
+		slowradius: stoppingEnemyStats.radius,
+		slow: stoppingEnemyStats.slow,
+		id: enemyid,
+		update: function() {
+			// Calculate direction towards player
+			const dx = player.x - this.x;
+			const dy = player.y - this.y;
+			const dist = Math.sqrt(dx * dx + dy * dy);
+			this.dx = (dx / dist) || 0;
+			this.dy = (dy / dist) || 0;
+      this.x += this.dx * this.speed;
+      this.y += this.dy * this.speed;
+			const dx2 = player.x - this.x;
+			const dy2 = player.y - this.y;
+			if(Math.sign(dx) != Math.sign(dx2) && Math.sign(dy) != Math.sign(dy2)) {
+				this.x = player.x;
+				this.y = player.y;
+			}	
+    }
+  };
+  window.enemies.push(enemy);
+	enemyid = (enemyid + 1) % 1e12;
+}
+
+/*
+var fastEnemyStats = {
+	type: 'fast',
+	color: '#bbbb11',
+	size: 15, // Fast enemy radius (px)
+	score: 20, // Score for killing a fast enemy
+	health: 3, // Fast enemy health
+	damage: 2, // Fast enemy damage
+	speed: 3, // Fast enemy movement speed (px/F)
+}
+function spawnFastEnemy(scaling) {
+  // Code for spawning a fast enemy goes here
+	const spawn = enemySpawnpoint();
+  const enemyType = fastEnemyStats.type;
+	const enemyColor = fastEnemyStats.color;
+  const enemy = {
+    x: spawn.x,
+    y: spawn.y,
+    type: enemyType,
+		color: enemyColor,
+    radius: fastEnemyStats.size,
+    score: fastEnemyStats.score,
+    health: fastEnemyStats.health * scaling,
+    damage: fastEnemyStats.damage * scaling,
+    speed: Math.min(fastEnemyStats.speed * scaling, 10),
+		id: enemyid,
+		update: function() {
+			// Calculate direction towards player
+			const dx = player.x - this.x;
+			const dy = player.y - this.y;
+			const dist = Math.sqrt(dx * dx + dy * dy);
+			this.dx = (dx / dist) || 0;
+			this.dy = (dy / dist) || 0;
+      this.x += this.dx * this.speed;
+      this.y += this.dy * this.speed;
+			const dx2 = player.x - this.x;
+			const dy2 = player.y - this.y;
+			if(Math.sign(dx) != Math.sign(dx2) && Math.sign(dy) != Math.sign(dy2)) {
+				this.x = player.x;
+				this.y = player.y;
+			}	
+    }
+  };
+  window.enemies.push(enemy);
+	enemyid = (enemyid + 1) % 1e12;
+}
+*/
+var boss1Stats = {
+	type: 'b1',
+	color: '#990000',
+	size: 100, // Boss1 enemy size
+	score: 1e4, // Score for killing a boss1 enemy
+	health: 2e3, // Boss1 enemy health
+	damage: 999, // Boss1 enemy damage
+	speed: 0.5, // Boss1 enemy movement speed (px/F)
+	dashSpeed: 5, // Boss1 enemy dash movement speed (px/F)
+	dashInterval: 180, // Rate of Boss1 changing it's movement speed (F)
+	spawnInterval: 900, // Rate of Boss1 spawning minions (F)
+	minionType: 'big', // Type of enemies Boss1 spawns
+	minionCount: 20, // How many enemies Boss1 spawns
+}
+function spawnB1Enemy(scaling) {
+  // Code for spawning a boss enemy goes here
+	const spawn = enemySpawnpoint();
+  const enemyType = boss1Stats.type;
+	const enemyColor = boss1Stats.color;
+  const enemy = {
+    x: spawn.x,
+    y: spawn.y,
+		timer: 0,
+    type: enemyType,
+		color: enemyColor,
+    radius: boss1Stats.size,
+    score: boss1Stats.score,
+    health: boss1Stats.health * scaling,
+    damage: boss1Stats.damage * scaling,
+    speed: Math.min(boss1Stats.speed * scaling, 10),
+		id: enemyid,
+		update: function() {
+			// Calculate direction towards player
+			const dx = player.x - this.x;
+			const dy = player.y - this.y;
+			const dist = Math.sqrt(dx * dx + dy * dy);
+			this.dx = (dx / dist) || 0;
+			this.dy = (dy / dist) || 0;
+      this.x += this.dx * this.speed;
+      this.y += this.dy * this.speed;
+      this.timer++;
+      if (this.timer % boss1Stats.dashInterval == 0) {
+        this.speed = (this.speed == (boss1Stats.speed * Math.min(scaling, 1)) ? boss1Stats.dashSpeed : boss1Stats.speed) * Math.min(scaling, 1);
+      }
+      if (this.timer % boss1Stats.spawnInterval == 0) {
+        this.speed = boss1Stats.speed;
+        for (let i = 0; i < boss1Stats.minionCount; i++) {
+          spawnEnemy(boss1Stats.minionType);
+        }
+      }
+    }
+  };
+  window.enemies.push(enemy);
+	enemyid = (enemyid + 1) % 1e12;
+}
+
+var boss2Stats = {
+	type: 'b2',
+	color: '#999900',
+	size: 120, // Boss2 enemy size
+	score: 1e5, // Score for killing a Boss2 enemy
+	health: 6e3, // Boss2 enemy health
+	damage: 4999, // Boss2 enemy damage
+	speed: 0.5, // Boss2 enemy movement speed (px/F)
+	dashSpeed: 5, // Boss2 enemy dash movement speed (px/F)
+	dashInterval: 300, // Rate of Boss2 changing it's movement speed (F)
+	spawnInterval: 3600, // Rate of Boss2 spawning minions (F)
+	minionType: 'fast', // Type of enemies Boss2 spawns
+	minionCount: 120, // How many enemies Boss2 spawns
+}
+function spawnB2Enemy(scaling) {
+  // Code for spawning a boss enemy goes here
+	const spawn = enemySpawnpoint();
+  const enemyType = boss2Stats.type;
+	const enemyColor = boss2Stats.color;
+  const enemy = {
+    x: spawn.x,
+    y: spawn.y,
+		timer: 0,
+    type: enemyType,
+		color: enemyColor,
+    radius: boss2Stats.size,
+    score: boss2Stats.score,
+    health: boss2Stats.health * scaling,
+    damage: boss2Stats.damage * scaling,
+    speed: Math.min(boss2Stats.speed * scaling, 10),
+		id: enemyid,
+		update: function() {
+			// Calculate direction towards player
+			const dx = player.x - this.x;
+			const dy = player.y - this.y;
+			const dist = Math.sqrt(dx * dx + dy * dy);
+			this.dx = (dx / dist) || 0;
+			this.dy = (dy / dist) || 0;
+      this.x += this.dx * this.speed;
+      this.y += this.dy * this.speed;
+      this.timer++;
+      if (this.timer % boss2Stats.dashInterval == 0 && this.timer % boss2Stats.spawnInterval != 0) {
+        this.speed = (this.speed == (boss2Stats.speed * Math.min(scaling, 1)) ? boss2Stats.dashSpeed : boss2Stats.speed) * Math.min(scaling, 1);
+      }
+      if (this.timer % boss2Stats.spawnInterval == 0) {
+        this.speed = boss2Stats.speed;
+        for (let i = 0; i < boss2Stats.minionCount; i++) {
+          spawnEnemy(boss2Stats.minionType);
+        }
+      }
+    }
+  };
+  window.enemies.push(enemy);
+	enemyid = (enemyid + 1) % 1e12;
+}
+
+var moonlightStats = {
+	type: 'moonlight',
+	color: '#ff8fdf',
+	size: 30, // Moonlight size
+	score: 1e6, // Score for killing Moonlight 
+	health: 1e4, // Moonlight health
+	damage: 0, // Moonlight damage (melee)
+	speed: 5, // Moonlight movement speed (px/F)
+	bulletDamage: 1, // Moonlight damage (ranged)
+	bulletCount: 5, // How many bullets Moonlight shoots
+	bulletRadius: 5, // Moonlight bullet radius
+	bulletSpeed: 10, // Moonlight bullet speed (px/F)
+	firerate: 150, // Moonlight fire rate (ms)
+	range: 500, // Moonlight bullet range (px)
+	stopDistance: 50, // Moonlight stops this close to player (px)
+	noCollide: 1, // Disable collision with player for Moonlight?
+	poison: {strength: 0.0001, duration: 1e4}, // The strength (MHP%/F) / duration (ms) of poison Moonlight applies
+}
+function spawnMoonlight(scaling) {
+  // Moonlight, double boss fight
+	const spawn = enemySpawnpoint();
+  const enemyType = moonlightStats.type;
+	const enemyColor = moonlightStats.color;
+  const enemy = {
+    x: spawn.x,
+    y: spawn.y,
+    type: enemyType,
+		color: enemyColor,
+    radius: moonlightStats.size,
+    score: moonlightStats.score,
+    health: moonlightStats.health * scaling,
+    damage: moonlightStats.damage * scaling,
+    speed: moonlightStats.speed * Math.min(scaling, 1),
+		lastFired: 0,
+		bulletRadius: moonlightStats.bulletRadius,
+		firerate: moonlightStats.firerate,
+		shootingRange: moonlightStats.range,
+		stopDistance: moonlightStats.stopDistance,
+		noCollide: moonlightStats.noCollide,
+		id: enemyid,
+		update: function() {
+			// Calculate direction towards player
+			const dx = player.x - this.x;
+			const dy = player.y - this.y;
+			const dist = Math.sqrt(dx * dx + dy * dy);
+			this.dx = (dx / dist) || 0;
+			this.dy = (dy / dist) || 0;
+			
+			// If player is within range, fire a bullet at them
+			this.lastFired -= 1000 / fps;
+			if (dist <= this.shootingRange && this.lastFired <= 0) {
+        let angle = Math.atan2((player.y + player.radius / 2) - (this.y + this.radius / 2), (player.x + player.radius / 2) - (this.x + this.radius / 2));
+				// Calculate the velocity of the bullets
+				var bulletSpeed = moonlightStats.bulletSpeed;
+				var bulletDamage = moonlightStats.bulletDamage;
+				var enemyProjectiles = moonlightStats.bulletCount;
+				var velocities = [];
+				for(let i = 0; i < enemyProjectiles; i++) {
+					var spreadAngle = (i - (enemyProjectiles - 1) / 2) * 0.1; // modify the spread angle as desired
+					var velocityX = bulletSpeed * Math.cos(angle + spreadAngle);
+					var velocityY = bulletSpeed * Math.sin(angle + spreadAngle);
+					velocities.push({x: velocityX, y: velocityY});
+				}
+
+				var bulletX = this.x + this.radius / 2 - this.bulletRadius / 2;
+				var bulletY = this.y + this.radius / 2 - this.bulletRadius / 2;
+
+				// Create a new bullet object for each bullet and add it to the active bullets array
+				for(let i = 0; i < enemyProjectiles; i++) {
+					var bullet = {x: bulletX, y: bulletY, dx: velocities[i].x, dy: velocities[i].y, radius: this.bulletRadius, damage: bulletDamage, enemy: 1, poison: moonlightStats.poison};
+					bullets.push(bullet);
+				}
+			  this.lastFired += this.firerate;
+			}
+			
+			if(dist > this.stopDistance) {
+				this.x += this.dx * this.speed;
+				this.y += this.dy * this.speed;
+			}
+			const dx2 = player.x - this.x;
+			const dy2 = player.y - this.y;
+			if(Math.sign(dx) != Math.sign(dx2) && Math.sign(dy) != Math.sign(dy2)) {
+				this.x = player.x;
+				this.y = player.y;
+			}
+    }
+  };
+  window.enemies.push(enemy);
+	enemyid = (enemyid + 1) % 1e12;
+}
+
+var darknessStats = {
+	type: 'darkness',
+	color: '#000',
+	size: 30, // Darkness size
+	score: 1e6, // Score for killing Darkness 
+	health: 1e4, // Darkness health
+	damage: 0, // Darkness damage (melee)
+	speed: 30, // Darkness movement speed (px/F)
+	syncSpeed: 7, // Darkness speed modifier when synced with Moonlight (higher number = slower)
+	bulletDamage: 10, // Darkness damage (ranged)
+	bulletCount: 1, // How many bullets Darkness shoots
+	bulletRadius: 5, // Darkness bullet radius
+	bulletSpeed: 20, // Darkness bullet speed (px/F)
+	firerate: 1000, // Moonlight fire rate (ms)
+	range: 800, // Darkness bullet range (px)
+	stopDistance: 50, // Darkness stops this close to player (px)
+	noCollide: 1, // Disable collision with player for Darkness?
+}
+function spawnDarkness(scaling) {
+  // Darkness, double boss fight
+	const spawn = enemySpawnpoint();
+  const enemyType = darknessStats.type;
+	const enemyColor = darknessStats.color;
+  const enemy = {
+    x: spawn.x,
+    y: spawn.y,
+    type: enemyType,
+		color: enemyColor,
+    radius: darknessStats.size,
+    score: darknessStats.score,
+    health: darknessStats.health * scaling,
+    damage: darknessStats.damage * scaling,
+    speed: darknessStats.speed * Math.min(scaling, 1),
+		lastFired: 0,
+		bulletRadius: darknessStats.bulletRadius,
+		firerate: darknessStats.firerate,
+		shootingRange: darknessStats.range,
+		stopDistance: darknessStats.stopDistance,
+		noCollide: darknessStats.noCollide,
+		id: enemyid,
+		update: function() {
+			// Calculate direction towards player
+			const dx = player.x - this.x;
+			const dy = player.y - this.y;
+			const dist = Math.sqrt(dx * dx + dy * dy);
+			this.dx = (dx / dist) || 0;
+			this.dy = (dy / dist) || 0;
+			
+			// Calculate direction away from other enemy
+			let otherEnemy = window.enemies.find(e => e.type === moonlightStats.type);
+			if(otherEnemy) {
+				const dx2 = (otherEnemy.x - (otherEnemy.x - player.x) * 2) - this.x;
+				const dy2 = (otherEnemy.y - (otherEnemy.y - player.y) * 2) - this.y;
+				const dist2 = Math.sqrt(dx2 * dx2 + dy2 * dy2);
+				this.dx = (dx2 / darknessStats.syncSpeed) || 0;
+				this.dy = (dy2 / darknessStats.syncSpeed) || 0;
+			}
+			
+			// If player is within range, fire a bullet at them
+			this.lastFired -= 1000 / fps;
+			if (dist <= this.shootingRange && this.lastFired <= 0) {
+        let angle = Math.atan2((player.y + player.radius / 2) - (this.y + this.radius / 2), (player.x + player.radius / 2) - (this.x + this.radius / 2));
+				// Calculate the velocity of the bullets
+				var bulletSpeed = darknessStats.bulletSpeed;
+				var bulletDamage = darknessStats.bulletDamage;
+				var enemyProjectiles = darknessStats.bulletCount;
+				var velocities = [];
+				for(let i = 0; i < enemyProjectiles; i++) {
+					var spreadAngle = (i - (enemyProjectiles - 1) / 2) * 0.1; // modify the spread angle as desired
+					var velocityX = bulletSpeed * Math.cos(angle + spreadAngle);
+					var velocityY = bulletSpeed * Math.sin(angle + spreadAngle);
+					velocities.push({x: velocityX, y: velocityY});
+				}
+
+				var bulletX = this.x + this.radius / 2 - this.bulletRadius / 2;
+				var bulletY = this.y + this.radius / 2 - this.bulletRadius / 2;
+
+				// Create a new bullet object for each bullet and add it to the active bullets array
+				for(let i = 0; i < enemyProjectiles; i++) {
+					var bullet = {x: bulletX, y: bulletY, dx: velocities[i].x, dy: velocities[i].y, radius: this.bulletRadius, damage: bulletDamage, enemy: 1};
+					bullets.push(bullet);
+				}
+				this.lastFired += this.firerate;
+			}
+			
+			if(dist > this.stopDistance || otherEnemy) {
+				this.x += this.dx * (otherEnemy ? 1 : this.speed);
+				this.y += this.dy * (otherEnemy ? 1 : this.speed);
+			}
+			const dx2 = player.x - this.x;
+			const dy2 = player.y - this.y;
+			if(Math.sign(dx) != Math.sign(dx2) && Math.sign(dy) != Math.sign(dy2)) {
+				this.x = player.x;
+				this.y = player.y;
+			}
+    }
+  };
+  window.enemies.push(enemy);
+	enemyid = (enemyid + 1) % 1e12;
+}
+
+function spawnEnemy(type, scaling = 1, modifier1, modifier2) {
+	spawnDelay = Date.now() + 1000;
+	if (type === "normal") {
+		spawnNormalEnemy(scaling);
+	} else if (type === "big") {
+		spawnBigEnemy(scaling);
+	} else if (type === "fast") {
+		spawnFastEnemy(scaling);
+	} else if (type === "split") {
+		spawnSplitEnemy(scaling, modifier1, modifier2);
+	} else if (type === "armored") {
+		spawnArmoredEnemy(scaling);
+	} else if (type === "shoot") {
+		spawnShootEnemy(scaling);
+	} else if (type === "slow") {
+		spawnSlowingEnemy(scaling);
+	} else if (type === "slow2") {
+		spawnSlowing2Enemy(scaling);
+	} else if (type === "stop") {
+		spawnStoppingEnemy(scaling);
+	} else if (type === "boss") {
+		spawnB1Enemy(scaling);
+	} else if (type === "boss2") {
+		spawnB2Enemy(scaling);
+	} else if (type === "moonlight") {
+		spawnMoonlight(scaling);
+	} else if (type === "darkness") {
+		spawnDarkness(scaling);
+	} else {
+		// Handle incorrect input
+		throw new Error("Invalid input");
+	}
+}
+
+var waves = [
+  [{type: 'normal', count: 20, rate: 150, scaling: 1}], // 1
+  [{type: 'big', count: 10, rate: 250, scaling: 1}], // 2
+  [{type: 'normal', count: 50, rate: 100, scaling: 1.1}], // 3
+  [{type: 'fast', count: 50, rate: 300, scaling: 0.7}], // 4
+  [{type: 'fast', count: 20, rate: 500, scaling: 1}, {type: 'split', count: 3, rate: 2000, scaling: 0.6}], // 5
+	[{type: 'split', count: 3, rate: -1, scaling: 1, mod1: 3, mod2: 3}, {type: 'normal', count: 100, rate: 250, scaling: 1.3}], // 6
+  [{type: 'normal', count: 250, rate: -1, scaling: 2}, {type: 'normal', count: 200, rate: -1, scaling: 3, delay: 500}, {type: 'normal', count: 50, rate: -1, scaling: 4, delay: 1000}], // 7
+	[{type: 'boss', count: 1, rate: -1, scaling: 1}, {type: 'fast', count: 100, rate: 300, scaling: 1.3}], // 8
+	[{type: 'split', count: 35, rate: 250, scaling: 1}], // 9
+  [{type: 'big', count: 500, rate: 20, scaling: 1.3}], // 10
+	[{type: 'armored', count: 3, rate: 350, scaling: 1}, {type: 'split', count: 20, rate: 600, scaling: 1.1}, {type: 'fast', count: 50, rate: 350, scaling: 1.2}], // 11
+	[{type: 'split', count: 20, rate: 400, scaling: 1.4, mod1: 3, mod2: 3}], // 12
+	[{type: 'shoot', count: 10, rate: 500, scaling: 1}], // 13
+	[{type: 'boss2', count: 1, rate: -1, scaling: 1}, {type: 'split', count: 100, rate: 300, scaling: 1.1}], // 14
+	[{type: 'shoot', count: 20, rate: 700, scaling: 1}, {type: 'split', count: 30, rate: 400, scaling: 1.2}, {type: 'fast', count: 80, rate: 250, scaling: 1.3}], // 16
+  [{type: 'moonlight', count: 1, rate: -1, scaling: 1}, {type: 'darkness', count: 1, rate: -1, scaling: 1}], // 17
+];
+
+var freeplay = 0;
+function spawnWave(waveInput) {
+  wave++;
+  var waveData = waves[waveInput];
+  if (waveData) {
+    waveData.forEach((enemyType) => {
+      let enemyData = {
+				type: enemyType.type,
+				count: enemyType.count,
+				rate: enemyType.rate,
+				scaling: (enemyType.scaling || 1) * parseFloat(difficulty),
+				delay: (enemyType.delay || 0),
+				mod1: enemyType.mod1,
+				mod2: enemyType.mod2,
+			}
+
+			spawnDelay = Date.now() + 1000;
+			setTimeout(() => {
+				for (let i = 0; i < enemyData.count; i++) {
+					if (enemyData.rate == -1) {
+						spawnEnemy(enemyData.type, enemyData.scaling, enemyData.mod1, enemyData.mod2);
+					} else {
+						setTimeout(() => {
+							spawnEnemy(enemyData.type, enemyData.scaling, enemyData.mod1, enemyData.mod2);
+						}, i * enemyData.rate)
+					}
+				}
+			}, enemyData.delay)
+    });
+  } else if(!freeplay) {
+		if(confirm('Do you want to play in freeplay?')) {
+			// User clicked OK, do something
+			freeplay = 1;
+			freeplayLoop();
+		} else {
+			// User clicked cancel, do something else or nothing
+      alert(`You win! Your score is: ${Math.round(window.score * 10) / 10}`);
+		}
+	}
+}
+
+
+const select = document.getElementById('my-select');
+var spawnDelay = null;
+canvas.addEventListener('mousedown', () => {
+	if(spawnDelay === null) {
+		difficulty = select.options[select.selectedIndex].value;
+		select.remove();
+		spawnDelay = 0;
+	}
+})
+
+function upgradeDamage() {
+	var count = 1;
+	if(keysPressed['ShiftLeft']) {
+		count *= 5;
+	}
+	if(keysPressed['ControlLeft']) {
+		count *= 20;
+	}
+	for(let i=0;i<count;i++) {
+		if(upgradePoints > 0) {
+			upgradePoints--;
+			player.damage = Math.max(player.damage * 1.2, player.damage + 1);
+			document.getElementById("damage-level").innerHTML = player.damage;
+			document.getElementById("upgrade-count").innerHTML = `Upgrades (${upgradePoints})`;
+		}
+	}
+}
+
+function upgradeFireRate() {
+	var count = 1;
+	if(keysPressed['ShiftLeft']) {
+		count *= 5;
+	}
+	if(keysPressed['ControlLeft']) {
+		count *= 20;
+	}
+	for(let i=0;i<count;i++) {
+		if(upgradePoints > 0) {
+			upgradePoints--;
+			player.firerate /= 1.2;
+			document.getElementById("fire-rate-level").innerHTML = player.firerate;
+			document.getElementById("upgrade-count").innerHTML = `Upgrades (${upgradePoints})`;
+		}
+	}
+}
+
+function upgradeProjectiles() {
+	var count = 1;
+	if(keysPressed['ShiftLeft']) {
+		count *= 5;
+	}
+	if(keysPressed['ControlLeft']) {
+		count *= 20;
+	}
+	for(let i=0;i<count;i++) {
+		if(upgradePoints > 0) {
+			upgradePoints--;
+			projectiles++;
+			player.firerate *= 1.3;
+			document.getElementById("projectile-level").innerHTML = projectiles;
+			document.getElementById("fire-rate-level").innerHTML = player.firerate;
+			document.getElementById("upgrade-count").innerHTML = `Upgrades (${upgradePoints})`;
+		}
+	}
+}
+
+function upgradeAllies() {
+	var count = 1;
+	if(keysPressed['ShiftLeft']) {
+		count *= 5;
+	}
+	if(keysPressed['ControlLeft']) {
+		count *= 20;
+	}
+	for(let i=0;i<count;i++) {
+		if(upgradePoints > 0) {
+			upgradePoints--;
+			spawnAlly();
+			document.getElementById("ally-level").innerHTML = allies.length;
+			document.getElementById("upgrade-count").innerHTML = `Upgrades (${upgradePoints})`;
+		}
+	}
+}
+
+function upgradePierce() {
+	var count = 1;
+	if(keysPressed['ShiftLeft']) {
+		count *= 5;
+	}
+	if(keysPressed['ControlLeft']) {
+		count *= 20;
+	}
+	for(let i=0;i<count;i++) {
+		if(upgradePoints > 0) {
+			upgradePoints--;
+			player.bulletPierce++
+			document.getElementById("pierce-level").innerHTML = player.bulletPierce;
+			document.getElementById("upgrade-count").innerHTML = `Upgrades (${upgradePoints})`;
+		}
+	}
+}
+
+function upgradeHealth() {
+	var count = 1;
+	if(keysPressed['ShiftLeft']) {
+		count *= 5;
+	}
+	if(keysPressed['ControlLeft']) {
+		count *= 20;
+	}
+	for(let i=0;i<count;i++) {
+		if(upgradePoints > 0) {
+			upgradePoints--;
+			player.maxhealth *= 2;
+			player.health *= 2;
+			document.getElementById("health-level").innerHTML = `${Math.round(player.health * 10) / 10}/${player.maxhealth}`;
+			document.getElementById("upgrade-count").innerHTML = `Upgrades (${upgradePoints})`;
+		}
+	}
+}
+
+function upgradeRegen() {
+	var count = 1;
+	if(keysPressed['ShiftLeft']) {
+		count *= 5;
+	}
+	if(keysPressed['ControlLeft']) {
+		count *= 20;
+	}
+	for(let i=0;i<count;i++) {
+		if(upgradePoints > 0) {
+			upgradePoints--;
+			player.regen += 0.1;
+			if(player.poisoned.strength) {
+				document.getElementById("regen-level").innerHTML = `${(Math.round(player.regen * 1e3) / 1e3)}% - ${(Math.round(player.poisoned.strength * 1e3) / 1e3)}%`;
+			} else {
+				document.getElementById("regen-level").innerHTML = `${(Math.round(player.regen * 1e3) / 1e3)}%`;
+			}
+			document.getElementById("upgrade-count").innerHTML = `Upgrades (${upgradePoints})`;
+		}
+	}
+}
+
+function startWave() {
+	if(wave > 0) {
+		upgradePoints++;
+	}
+	spawnWave(wave);
+	document.getElementById("upgrade-count").innerHTML = `Upgrades (${upgradePoints})`;
+}
+
+function updateAllies() {
+  for (let i = 0; i < allies.length; i++) {
+    const ally = allies[i];
+    ally.update();
+		ally.shoot()
+	}
+}
+function updateEnemies() {
+  for (let i = 0; i < window.enemies.length; i++) {
+    const enemy = window.enemies[i];
+    enemy.update();
+    if (collision(player, enemy) && !enemy.noCollide) {
+      // Health loss
+      player.health -= enemy.damage;
+			document.getElementById("health-level").innerHTML = `${Math.round(player.health * 10) / 10}/${player.maxhealth}`;
+      if (player.health > 0) {
+				window.score += Math.round(enemy.score * parseFloat(difficulty) * 10) / 10;
+        window.enemies.splice(i, 1);
+			}
+      // End game if health <= 0
+      if (player.health <= 0 && !dead) {
+        dead = 1;
+				alert(`You died on wave ${wave}. Your score is: ${Math.round(window.score * 10) / 10}`);
+        location.reload();
+      }
+    }
+  }
+}
+
+function collision(a, b) {
+  return a.x < b.x + b.radius && a.x + a.radius > b.x && a.y < b.y + b.radius && a.y + a.radius > b.y;
+}
+
+function freeplayLoop() {
+	spawnEnemy('moonlight');
+	setTimeout(() => {
+		freeplayLoop()
+	}, 500)
+}
+
+function animate() {
+  // Clear canvas
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  // Draw player
+  ctx.fillStyle = '#2288ff';
+  ctx.fillRect(player.x, player.y, player.radius, player.radius);
+  update();
+  // Draw allies
+  ctx.fillStyle = '#ff8888';
+	updateAllies();
+  for (let i = 0; i < allies.length; i++) {
+    const ally = allies[i];
+    ctx.fillRect(ally.x, ally.y, ally.radius, ally.radius);
+  }
+
+	if(spawnDelay != null && spawnDelay < Date.now() && enemies.length == 0) {
+		startWave()
+	}
+	
+  // Draw enemies
+  updateEnemies();
+  for (let i = 0; i < window.enemies.length; i++) {
+    const enemy = window.enemies[i];
+		ctx.fillStyle = enemy.color;
+    ctx.fillRect(enemy.x, enemy.y, enemy.radius, enemy.radius);
+  }
+  for (let i = 0; i < bullets.length; i++) {
+    const bullet = bullets[i];
+    drawBullet(bullet.x, bullet.y)
+  }
+
+  // Call animate again on the next animation frame
+  requestAnimationFrame(animate);
+}
+
+// Start the animation loop
+requestAnimationFrame(animate);
+    </script>
+  </body>
+</html>
